@@ -106,6 +106,17 @@ class DeepSeekV31ToolParser(ToolParser):
                         )
                     )
 
+                # The start token can appear without a frameable call, e.g. a
+                # truncated or malformed block. Reporting tools_called=True with
+                # an empty list would mark the response as a tool call while
+                # carrying none, and the raw output would be dropped instead of
+                # shown, so this is treated as "no tool call" like the two
+                # other no-call paths above.
+                if not tool_calls:
+                    return ExtractedToolCallInformation(
+                        tools_called=False, tool_calls=[], content=model_output
+                    )
+
                 content = model_output[: model_output.find(self.tool_calls_start_token)]
                 return ExtractedToolCallInformation(
                     tools_called=True,

@@ -59,3 +59,28 @@ def test_extract_tool_calls_with_multiple_tools(parser):
 
     # prefix is content
     assert result.content == "some prefix text"
+
+
+def test_start_token_without_frameable_call_is_not_a_tool_call(parser):
+    """A start token with nothing frameable must not report a tool call.
+
+    The response would otherwise be flagged as a tool call while carrying none,
+    and the raw output would be dropped rather than returned as content.
+    """
+    model_output = '<｜tool▁calls▁begin｜>foo<｜tool▁sep｜>{"x":1}<｜tool▁calls▁end｜>'
+    result = parser.extract_tool_calls(model_output, None)
+
+    assert result.tools_called is False
+    assert result.tool_calls == []
+    assert result.content == model_output
+
+
+def test_generated_text_before_a_malformed_call_is_preserved(parser):
+    model_output = (
+        "Let me check that." + "<｜tool▁calls▁begin｜>" + 'foo<｜tool▁sep｜>{"x":1}'
+    )
+    result = parser.extract_tool_calls(model_output, None)
+
+    assert result.tools_called is False
+    assert result.tool_calls == []
+    assert result.content == model_output
