@@ -34,18 +34,45 @@ else:
 logger = init_logger(__name__)
 
 
-def _walk_json_for_additional_properties(data: object):
-    if isinstance(data, dict):
-        for value in data.values():
-            _walk_json_for_additional_properties(value)
-        if "additionalProperties" not in data and (
-            "properties" in data or "patternProperties" in data
-        ):
-            data["additionalProperties"] = False
-    elif isinstance(data, list):
-        for item in data:
-            _walk_json_for_additional_properties(item)
+# JSON-schema keywords whose values are themselves schemas (object / list of
+# schemas / mapping of schemas). Instance-data keywords are skipped so that
+# ``additionalProperties`` is only injected into real schema nodes.
+_SCHEMA_OBJECT_KEYS = frozenset({
+    "items", "additionalProperties", "not", "if", "then", "else",
+    "contains", "propertyNames",
+})
+_SCHEMA_OBJECT_LIST_KEYS = frozenset({"prefixItems", "allOf", "anyOf", "oneOf"})
+_SCHEMA_OBJECT_MAP_KEYS = frozenset({
+    "properties", "patternProperties", "dependentSchemas", "$defs",
+})
+_SCHEMA_INSTANCE_DATA_KEYS = frozenset({
+    "const", "enum", "default", "examples", "example",
+})
 
+
+def _walk_json_for_additional_properties(data: object):
+    # Only descend into schema-valued keywords. Instance data held in
+    # ``const``/``enum``/``default``/``examples`` must be left untouched,
+    # otherwise a ``const`` literal that contains a ``properties`` member
+    # (e.g. a GeoJSON Feature) gets an injected ``additionalProperties:false``
+    # and stops matching the compiled grammar.
+    if not isinstance(data, dict):
+        return
+    if "additionalProperties" not in data and (
+        "properties" in data or "patternProperties" in data
+    ):
+        data["additionalProperties"] = False
+    for key, value in data.items():
+        if key in _SCHEMA_INSTANCE_DATA_KEYS:
+            continue
+        if key in _SCHEMA_OBJECT_KEYS and isinstance(value, dict):
+            _walk_json_for_additional_properties(value)
+        elif key in _SCHEMA_OBJECT_LIST_KEYS and isinstance(value, list):
+            for item in value:
+                _walk_json_for_additional_properties(item)
+        elif key in _SCHEMA_OBJECT_MAP_KEYS and isinstance(value, dict):
+            for sub_schema in value.values():
+                _walk_json_for_additional_properties(sub_schema)
 
 def has_guidance_unsupported_json_features(schema: dict[str, Any]) -> bool:
     """Check if JSON schema contains features unsupported by guidance/llguidance."""
