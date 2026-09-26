@@ -23,7 +23,8 @@ import uvloop
 from fastapi import FastAPI, Response
 
 import vllm.envs as envs
-from vllm.logger import configure_logging_from_args, init_logger
+from vllm.logger import init_logger
+from vllm.utils.network_utils import join_host_port
 from vllm.utils.system_utils import (
     decorate_logs,
     kill_process_tree,
@@ -162,7 +163,7 @@ def _child_base_url(args: argparse.Namespace, port: int) -> str:
     elif host == "::":
         host = "::1"
     scheme = "https" if args.ssl_keyfile and args.ssl_certfile else "http"
-    return f"{scheme}://{host}:{port}"
+    return f"{scheme}://{join_host_port(host, port)}"
 
 
 def _join_processes_with_timeout(processes: list[BaseProcess], timeout: float) -> None:
@@ -251,8 +252,6 @@ def _run_rust_vllm_dp_server(child_args: argparse.Namespace) -> None:
 
 def _run_vllm_dp_server(child_args: argparse.Namespace) -> None:
     """Entrypoint function for the vLLM DP Server."""
-    configure_logging_from_args(child_args)
-
     # Create a fresh process group for the vLLM DP Server,
     # so that CTRL-C is propagated cleanly.
     os.setpgrp()
@@ -560,5 +559,4 @@ class DPSupervisor:
 
 
 def run_dp_supervisor(args: argparse.Namespace) -> None:
-    configure_logging_from_args(args)
     uvloop.run(DPSupervisor(args).run())
