@@ -51,6 +51,12 @@ def is_function_recipient(
         return len(recipient) > len("functions.")
     if recipient == "assistant":
         return False
+    # gpt-oss-20b sometimes opens with a stray `<|channel|>commentary to=assistant`
+    # header before its analysis channel. Treat anything addressed to "assistant"
+    # (including tokenized recipient strings that carry trailing channel markup)
+    # as a non-function recipient.
+    if recipient.split("<|", 1)[0] == "assistant":
+        return False
     if recipient in BUILTIN_TOOL_TO_MCP_SERVER_LABEL:
         return False
     first_segment = recipient.split(".", 1)[0]
