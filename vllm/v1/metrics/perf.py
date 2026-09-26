@@ -1567,7 +1567,16 @@ class ModelMetrics:
 
             # Cached requests are typically in decode phase (num_tokens == 1)
             # unless they're doing chunked prefill (num_tokens > 1)
-            is_prefill = num_tokens > 1
+            # Cached requests are typically in decode phase (num_tokens == 1)
+            # unless they are doing chunked prefill (num_decode_tokens > 1).
+            # With speculative decoding a decode step schedules 1 + k tokens,
+            # so subtract the spec-decode tokens before deciding; otherwise every
+            # speculative decode step is misclassified as prefill.
+            num_spec_tokens = len(
+                scheduler_output.scheduled_spec_decode_tokens.get(req_id, ())
+            )
+            num_decode_tokens = num_tokens - num_spec_tokens
+            is_prefill = num_decode_tokens > 1
             ctx.add(num_tokens, context_len, is_prefill)
 
         num_flops_breakdown = self.get_num_flops_breakdown(ctx, True)

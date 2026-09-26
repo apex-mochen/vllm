@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+﻿# SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Tests for the analytic estimators in metrics/flops.py."""
 
@@ -6,7 +6,7 @@ import types
 from types import SimpleNamespace
 
 import pytest
-from transformers import Gemma2Config, MistralConfig
+from transformers import Gemma2Config, LlamaConfig, MistralConfig
 from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
 from transformers.models.llama4.configuration_llama4 import (
     Llama4Config,
@@ -1748,3 +1748,41 @@ def test_attention_metrics_per_gpu_layers_sum_to_whole_model():
 
     for key, value in whole.items():
         assert per_gpu[key] * pp_size == pytest.approx(value, rel=1e-9)
+
+
+
+
+def test_step_perf_spec_decode_decode_not_classified_as_prefill(monkeypatch):
+    """Speculative decode steps schedule 1+k tokens and must stay decode (#58719)."""
+    hf_config = LlamaConfig(
+        hidden_size=256,
+        num_attention_heads=4,
+        num_hidden_layers=2,
+        vocab_size=32000,
+        intermediate_size=128,
+    )
+    vllm_config = create_mock_vllm_config(hf_config)
+    model_metrics = ModelMetrics(vllm_config)
+
+    seen = []
+
+    class CaptureCtx:
+        def add(self, num_tokens, context_len, is_prefill):
+            seen.append((num_tokens, is_prefill))
+
+    monkeypatch.setattr(
+        "vllm.v1.metrics.perf.ExecutionContext", CaptureCtx
+    )
+
+    cached_reqs = SimpleNamespace(
+        req_ids=["r0"],
+        num_computed_tokens=[100],
+    )
+    scheduler_output = SimpleNamespace(
+        scheduled_new_reqs=[],
+        scheduled_cached_reqs=cached_reqs,
+        num_scheduled_tokens={"r0": 3},
+        scheduled_spec_decode_tokens={"r0": [11, 12]},
+    )
+    model_metrics.get_step_perf_stats_per_gpu(scheduler_output)
+    assert seen == [(3, False)], seen
