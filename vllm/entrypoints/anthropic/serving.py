@@ -367,9 +367,8 @@ class AnthropicServingMessages(OpenAIServingChat):
                 for block in anthropic_request.system:
                     if block.type != "text":
                         logger.warning_once(
-                            "Anthropic system messages should only contain "
-                            "text content. Found content type: '%s'; it will "
-                            "be ignored.",
+                            "Unsupported content type '%s' in Anthropic system "
+                            "message; it will be ignored.",
                             block.type,
                         )
                         continue
@@ -409,9 +408,8 @@ class AnthropicServingMessages(OpenAIServingChat):
                 continue
             if block.type != "text":
                 logger.warning_once(
-                    "Anthropic system messages should only contain "
-                    "text content. Found content type: '%s'; it will "
-                    "be ignored.",
+                    "Unsupported content type '%s' in Anthropic system "
+                    "message; it will be ignored.",
                     block.type,
                 )
                 continue
