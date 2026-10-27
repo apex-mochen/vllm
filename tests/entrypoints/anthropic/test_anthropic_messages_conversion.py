@@ -61,6 +61,15 @@ _convert = AnthropicServingMessages.to_chat_completion_request
 _img_url = AnthropicServingMessages._convert_image_source_to_url
 
 
+def _system_warnings(caplog):
+    return [
+        record
+        for record in caplog.records
+        if record.name == "vllm.entrypoints.anthropic.serving"
+        and record.levelname == "WARNING"
+    ]
+
+
 def _make_request(
     messages: list[dict],
     **kwargs,
@@ -435,7 +444,7 @@ class TestToolResultContent:
 
 
 class TestAttributionHeaderStripping:
-    def test_billing_header_stripped_from_system(self):
+    def test_billing_header_stripped_from_system(self, caplog_vllm, disable_log_dedup):
         """Claude Code's x-anthropic-billing-header block should be
         stripped to preserve prefix caching."""
         request = _make_request(
@@ -453,8 +462,11 @@ class TestAttributionHeaderStripping:
         system_msg = result.messages[0]
         assert system_msg["role"] == "system"
         assert system_msg["content"] == "You are a helpful assistant."
+        assert not _system_warnings(caplog_vllm)
 
-    def test_system_without_billing_header_unchanged(self):
+    def test_system_without_billing_header_unchanged(
+        self, caplog_vllm, disable_log_dedup
+    ):
         """Normal system blocks should pass through unchanged."""
         request = _make_request(
             [{"role": "user", "content": "Hello"}],
@@ -466,8 +478,9 @@ class TestAttributionHeaderStripping:
         result = _convert(request)
         system_msg = result.messages[0]
         assert system_msg["content"] == "You are a helpful assistant. Be concise."
+        assert not _system_warnings(caplog_vllm)
 
-    def test_system_string_unchanged(self):
+    def test_system_string_unchanged(self, caplog_vllm, disable_log_dedup):
         """String system prompts should pass through unchanged."""
         request = _make_request(
             [{"role": "user", "content": "Hello"}],
@@ -476,6 +489,7 @@ class TestAttributionHeaderStripping:
         result = _convert(request)
         system_msg = result.messages[0]
         assert system_msg["content"] == "You are a helpful assistant."
+        assert not _system_warnings(caplog_vllm)
 
 
 @pytest.mark.usefixtures("disable_log_dedup")
@@ -483,7 +497,7 @@ class TestUnsupportedSystemContentWarning:
     """Unsupported (non-text) Anthropic system content blocks are dropped
     for backward compatibility, but must not be dropped silently."""
 
-    _WARNING = "should only contain text content"
+    _WARNING = "Unsupported content type"
 
     @staticmethod
     def _tool_change_request(*extra_blocks: dict) -> AnthropicMessagesRequest:
@@ -527,7 +541,7 @@ class TestUnsupportedSystemContentWarning:
         }
 
     @pytest.mark.parametrize("merge_inline_system", [False, True])
-    def test_tool_change_blocks_do_not_warn(self, caplog, merge_inline_system):
+    def test_tool_change_blocks_do_not_warn(self, caplog_vllm, merge_inline_system):
         """tool_addition/tool_removal are applied by _resolve_tools, not
         ignored, so they must not trigger the unsupported-content warning."""
         result = _convert(
@@ -536,11 +550,11 @@ class TestUnsupportedSystemContentWarning:
         self._assert_tool_changes_applied(result)
         system_msgs = [m for m in result.messages if m["role"] == "system"]
         assert [m["content"] for m in system_msgs] == ["Tools changed."]
-        assert not any(self._WARNING in r.getMessage() for r in caplog.records)
+        assert not any(self._WARNING in r.getMessage() for r in caplog_vllm.records)
 
     @pytest.mark.parametrize("merge_inline_system", [False, True])
     def test_only_ignored_block_warns_next_to_tool_changes(
-        self, caplog, merge_inline_system
+        self, caplog_vllm, merge_inline_system
     ):
         image = {
             "type": "image",
@@ -551,16 +565,21 @@ class TestUnsupportedSystemContentWarning:
         )
         self._assert_tool_changes_applied(result)
         warnings = [
-            r.getMessage() for r in caplog.records if self._WARNING in r.getMessage()
+            r.getMessage()
+            for r in caplog_vllm.records
+            if self._WARNING in r.getMessage()
         ]
         assert len(warnings) == 1
         assert "'image'" in warnings[0]
 
-    def test_top_level_image_block_warns_and_ignored(self, caplog):
-        """An image block in the top-level system field is ignored with a
-        warning, while text blocks are preserved."""
-        request = _make_request(
-            [{"role": "user", "content": "Hello"}],
+    @pytest.mark.parametrize(
+        "request_cls", [AnthropicMessagesRequest, AnthropicCountTokensRequest]
+    )
+    def test_top_level_image_block_warns_and_ignored(self, request_cls, caplog_vllm):
+        fields = {"max_tokens": 128} if request_cls is AnthropicMessagesRequest else {}
+        request = request_cls(
+            model="test-model",
+            messages=[{"role": "user", "content": "Hello"}],
             system=[
                 {"type": "text", "text": "You are a helpful assistant."},
                 {
@@ -572,21 +591,28 @@ class TestUnsupportedSystemContentWarning:
                     },
                 },
             ],
+            **fields,
         )
         result = _convert(request)
-        system_msg = result.messages[0]
-        assert system_msg["role"] == "system"
-        assert system_msg["content"] == "You are a helpful assistant."
-        assert any(
-            "should only contain text content" in r.message and "image" in r.message
-            for r in caplog.records
-        )
+        assert result.messages[0] == {
+            "role": "system",
+            "content": "You are a helpful assistant.",
+        }
+        warnings = _system_warnings(caplog_vllm)
+        assert len(warnings) == 1
+        assert "'image'" in warnings[0].message
 
-    def test_inline_system_image_block_warns_and_ignored(self, caplog):
-        """An image block in an inline system message is ignored with a
-        warning instead of being silently dropped."""
-        request = _make_request(
-            [
+    @pytest.mark.parametrize(
+        "request_cls", [AnthropicMessagesRequest, AnthropicCountTokensRequest]
+    )
+    @pytest.mark.parametrize("merge_inline_system", [False, True])
+    def test_inline_system_image_block_warns_and_ignored(
+        self, request_cls, merge_inline_system, caplog_vllm
+    ):
+        fields = {"max_tokens": 128} if request_cls is AnthropicMessagesRequest else {}
+        request = request_cls(
+            model="test-model",
+            messages=[
                 {
                     "role": "system",
                     "content": [
@@ -603,15 +629,14 @@ class TestUnsupportedSystemContentWarning:
                 },
                 {"role": "user", "content": "Hello"},
             ],
+            **fields,
         )
-        result = _convert(request)
+        result = _convert(request, merge_inline_system=merge_inline_system)
         system_msgs = [m for m in result.messages if m["role"] == "system"]
-        assert system_msgs
-        assert all(m["content"] == "Be concise." for m in system_msgs)
-        assert any(
-            "should only contain text content" in r.message and "image" in r.message
-            for r in caplog.records
-        )
+        assert system_msgs == [{"role": "system", "content": "Be concise."}]
+        warnings = _system_warnings(caplog_vllm)
+        assert len(warnings) == 1
+        assert "'image'" in warnings[0].message
 
 
 # ======================================================================
@@ -2253,17 +2278,21 @@ class TestMidConversationToolChanges:
     def _change(block_type: str, name: str) -> dict:
         return {"type": block_type, "tool": {"type": "tool_reference", "name": name}}
 
-    def test_addition_loads_deferred_tool(self):
+    def test_addition_loads_deferred_tool(self, caplog_vllm, disable_log_dedup):
         tools = self._convert_tools(self._change("tool_addition", "search"))
         assert tools == {"bash": None, "search": None, "fetch": True}
+        assert not _system_warnings(caplog_vllm)
 
-    def test_removal_withdraws_tool_until_added_again(self):
+    def test_removal_withdraws_tool_until_added_again(
+        self, caplog_vllm, disable_log_dedup
+    ):
         removal = self._change("tool_removal", "bash")
         assert "bash" not in self._convert_tools(removal)
         readded = self._convert_tools(removal, self._change("tool_addition", "bash"))
         assert list(readded) == ["bash", "search", "fetch"]
+        assert not _system_warnings(caplog_vllm)
 
-    def test_addition_defines_tool_by_value(self):
+    def test_addition_defines_tool_by_value(self, caplog_vllm, disable_log_dedup):
         definition = {"name": "db_query", "input_schema": {}}
         tools = self._convert_tools(
             {
@@ -2272,6 +2301,7 @@ class TestMidConversationToolChanges:
             }
         )
         assert list(tools) == ["bash", "search", "fetch", "db_query"]
+        assert not _system_warnings(caplog_vllm)
 
     def test_unknown_tool_reference_is_rejected(self):
         with pytest.raises(ValueError, match="not declared in tools"):
